@@ -1,5 +1,6 @@
 (ns jogl.core
   (:gen-class)
+  (:require [com.stuartsierra.component :as c])
   (:import (javax.media.opengl GL GL2 GLAutoDrawable GLCapabilities)
            (javax.media.opengl GLEventListener GLProfile)
            (javax.media.opengl.fixedfunc GLMatrixFunc)
@@ -13,8 +14,7 @@
         y (atom (int (* (Math/random) 480)))]
     (proxy [GLEventListener] []
       (display [drawable]
-        (let [id (.getId (Thread/currentThread))
-              g2 (.getGL2 (.getGL drawable))]
+        (let [g2 (.getGL2 (.getGL drawable))]
           (swap! x (comp #(mod % 640) inc))
           (swap! y (comp #(mod % 640) inc))
           (doto g2
@@ -36,21 +36,41 @@
       (dispose [arg0])
       (reshape [arg0 arg1 arg2 arg3 arg4]))))
 
+(defrecord Context [profile capabilities]
+  c/Lifecycle
+  (start [ctx]
+    (let [profile (or profile (GLProfile/getDefault)) ]
+      (assoc ctx
+        :profile profile
+        :capabilities (or capabilities (GLCapabilities. profile)))))
+  (stop [ctx]
+    (dissoc ctx :profile :capabilities)))
+
+(defrecord Window [window setup-window context]
+  c/Lifecycle
+  (start [this]
+    (if-not window
+      (assoc this
+        :window (setup-window (GLWindow/create (:capabilities context))))
+      this))
+  (stop [this]
+    (dissoc this :window)))
+
+(defn gl-system
+  [options]
+  (c/system-map
+   :context (map->Context {})
+   :window (c/using (map->Window options) [:context])))
+
 (defn -main
   [& args]
-  (let [profile (GLProfile/getDefault)
-        capabilities (GLCapabilities. profile)
-        window (GLWindow/create capabilities)]
-    (doto window
-      (.setSize 640 480)
-      (.setVisible true)
-      (.setTitle "Starfleet")
-      (.addWindowListener (proxy [WindowAdapter] []
-                            (windowDestroyNotify [e]
-                              (System/exit 0))))
-      (.addGLEventListener (gl-event-listener)))
-    
-    (doto (FPSAnimator. window 60)
-      (.start))
-
-    window))
+  (letfn [(setup-window [window]
+            (doto window
+              (.setSize 640 480)
+              (.setVisible true)
+              (.setTitle "JOGL")
+              (.addWindowListener (proxy [WindowAdapter] []
+                                    (windowDestroyNotify [e])))
+              (.addGLEventListener (gl-event-listener)))
+            (.start (FPSAnimator. window 60)))]
+    (c/start (gl-system {:setup-window setup-window}))))
