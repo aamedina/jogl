@@ -1,12 +1,34 @@
 (ns jogl.core
   (:gen-class)
-  (:require [com.stuartsierra.component :as c])
-  (:import (javax.media.opengl GL GL2 GLAutoDrawable GLCapabilities)
+  (:require [com.stuartsierra.component :as c]
+            [clojure.reflect :as r]
+            [clojure.string :as str])
+  (:import (javax.media.opengl GL GLBase GL2ES2 GLAutoDrawable GLCapabilities)
            (javax.media.opengl GLEventListener GLProfile)
            (javax.media.opengl.fixedfunc GLMatrixFunc)
+           (javax.media.opengl.awt GLCanvas)
            (com.jogamp.newt.event WindowAdapter WindowEvent)
            (com.jogamp.newt.opengl GLWindow)
-           (com.jogamp.opengl.util FPSAnimator)))
+           (com.jogamp.opengl.util FPSAnimator)
+           (java.lang.reflect Method Parameter)))
+
+(def ^:dynamic *gl* nil)
+
+(defmacro generate-opengl-api
+  [cls]
+  `(do ~@(for [{:keys [name flags parameter-types]
+                :as member} (:members (r/reflect (resolve cls)))
+                :let [method? (instance? clojure.reflect.Method member)
+                      arg-range (range (count parameter-types))
+                      args (map #(symbol (str "arg" %)) arg-range)]
+                :when (and method? (:public flags) (not (:static flags)))]
+           `(defn ~name
+              ~(into [] args)
+              (. *gl* ~(cons name args))))))
+
+(generate-opengl-api GL)
+(generate-opengl-api GLBase)
+(generate-opengl-api GL2ES2)
 
 (defn gl-event-listener
   []
@@ -14,35 +36,24 @@
         y (atom (int (* (Math/random) 480)))]
     (proxy [GLEventListener] []
       (display [drawable]
-        (let [g2 (.getGL2 (.getGL drawable))]
-          (swap! x (comp #(mod % 640) inc))
-          (swap! y (comp #(mod % 640) inc))
-          (doto g2
-            (.glClearColor 0.0 0.0 0.3 1.0)
-            (.glClear GL/GL_COLOR_BUFFER_BIT)
-            (.glMatrixMode GLMatrixFunc/GL_PROJECTION)
-            (.glLoadIdentity)
-            (.glOrtho 0 640 0 480 1 100)
-            (.glMatrixMode GLMatrixFunc/GL_MODELVIEW)
-            (.glLoadIdentity)
-            (.glTranslated 0 0 -1)
-            (.glBegin GL2/GL_QUADS)
-            (.glVertex2d @x (+ @y 10))
-            (.glVertex2d @x @y)
-            (.glVertex2d (+ @x 10) @y)
-            (.glVertex2d (+ @x 10) (+ @y 10))
-            (.glEnd))))
+        (binding [*gl* (.getGL2ES2 (.getGL drawable))]
+          (swap! x #(mod (inc %) 640))
+          (swap! y #(mod (inc %) 640))
+          (glClearColor 0.0 0.0 1.0 1.0)
+          (glClear GL/GL_COLOR_BUFFER_BIT)))
       (init [arg0])
       (dispose [arg0])
       (reshape [arg0 arg1 arg2 arg3 arg4]))))
 
-(defrecord Context [profile capabilities]
+(defrecord Context [capabilities profile]
   c/Lifecycle
   (start [ctx]
-    (let [profile (or profile (GLProfile/getDefault)) ]
-      (assoc ctx
-        :profile profile
-        :capabilities (or capabilities (GLCapabilities. profile)))))
+    (if-not capabilities
+      (let [profile (or profile (GLProfile/getGL2ES2))]
+        (assoc ctx
+          :profile profile
+          :capabilities (GLCapabilities. profile)))
+      ctx))
   (stop [ctx]
     (dissoc ctx :profile :capabilities)))
 
@@ -62,6 +73,11 @@
    :context (map->Context {})
    :window (c/using (map->Window options) [:context])))
 
+(defn load-shader
+  [gl src type]
+  (doto gl
+    (.glCreateShader )))
+
 (defn -main
   [& args]
   (letfn [(setup-window [window]
@@ -73,4 +89,4 @@
                                     (windowDestroyNotify [e])))
               (.addGLEventListener (gl-event-listener)))
             (.start (FPSAnimator. window 60)))]
-    (c/start (gl-system {:setup-window setup-window}))))
+    (c/start-system (gl-system {:setup-window setup-window}))))
