@@ -14,17 +14,26 @@
 
 (def ^:dynamic *gl* nil)
 
+(defn fn-method
+  [{:keys [name flags parameter-types] :as member}]
+  (let [arg-range (range (count parameter-types))
+        args (map #(symbol (str "arg" %)) arg-range)]
+    (cons (into [] args)
+          (list `(. *gl* ~(cons name args))))))
+
 (defmacro generate-opengl-api
   [cls]
-  `(do ~@(for [{:keys [name flags parameter-types]
-                :as member} (:members (r/reflect (resolve cls)))
-                :let [method? (instance? clojure.reflect.Method member)
-                      arg-range (range (count parameter-types))
-                      args (map #(symbol (str "arg" %)) arg-range)]
-                :when (and method? (:public flags) (not (:static flags)))]
-           `(defn ~name
-              ~(into [] args)
-              (. *gl* ~(cons name args))))))
+  (let [members (->> (:members (r/reflect (resolve cls)))
+                     (filter #(and (instance? clojure.reflect.Method %)
+                                   (:public (:flags %))
+                                   (not (:static (:flags %))))))]
+    `(do ~@(for [[name fn-methods] (group-by :name members)
+                 :let [arg-counts (map (comp count :parameter-types) fn-methods)
+                       fn-methods (if (== (count (distinct arg-counts)) 1)
+                                    [(first fn-methods)]
+                                    fn-methods)]]
+             `(defn ~name
+                ~@(map fn-method fn-methods))))))
 
 (generate-opengl-api GL)
 (generate-opengl-api GLBase)
@@ -37,8 +46,6 @@
     (proxy [GLEventListener] []
       (display [drawable]
         (binding [*gl* (.getGL2ES2 (.getGL drawable))]
-          (swap! x #(mod (inc %) 640))
-          (swap! y #(mod (inc %) 640))
           (glClearColor 0.0 0.0 1.0 1.0)
           (glClear GL/GL_COLOR_BUFFER_BIT)))
       (init [arg0])
@@ -74,9 +81,9 @@
    :window (c/using (map->Window options) [:context])))
 
 (defn load-shader
-  [gl src type]
-  (doto gl
-    (.glCreateShader )))
+  [src type]
+  (let [shader (glCreateShader type)]
+    (glShaderSource shader 1 (into-array String src) nil)))
 
 (defn -main
   [& args]
