@@ -1,16 +1,18 @@
 (ns jogl.core
   (:gen-class)
-  (:require [com.stuartsierra.component :as c]
+  (:require [clojure.core.async :as a :refer [go <! >! go-loop put! chan]]
+            [com.stuartsierra.component :as c]
             [clojure.reflect :as r]
             [clojure.string :as str])
   (:import (javax.media.opengl GL GLBase GL2ES2 GLAutoDrawable GLCapabilities)
-           (javax.media.opengl GLEventListener GLProfile)
+           (javax.media.opengl GLEventListener GLProfile DebugGLES2)
            (javax.media.opengl.fixedfunc GLMatrixFunc)
            (javax.media.opengl.awt GLCanvas)
            (com.jogamp.newt.event WindowAdapter WindowEvent)
            (com.jogamp.newt.opengl GLWindow)
            (com.jogamp.opengl.util FPSAnimator)
-           (java.lang.reflect Method Parameter)))
+           (java.lang.reflect Method Parameter)
+           (java.nio IntBuffer)))
 
 (def ^:dynamic *gl* nil)
 
@@ -39,16 +41,66 @@
 (generate-opengl-api GLBase)
 (generate-opengl-api GL2ES2)
 
-(defn gl-event-listener
+(defn load-shader
+  [src type]
+  (let [shader (glCreateShader (case type
+                                 :vertex GL2ES2/GL_VERTEX_SHADER
+                                 :fragment GL2ES2/GL_FRAGMENT_SHADER))
+        compiled (IntBuffer/allocate 1)]
+    (when-not (zero? shader)
+      (glShaderSource shader (int 1) (into-array String [src]) nil)
+      (glCompileShader shader)
+      (glGetShaderiv shader GL2ES2/GL_COMPILE_STATUS compiled)
+      (when (zero? (.get compiled))
+        shader))))
+
+(defprotocol Canvas
+  (setup [canvas])
+  (draw [canvas user-data]))
+
+(defn hello-triangle
+  "OpenGL ES 2.0 Programming Guide example pg. 22"
   []
-  (let [x (atom (int (* (Math/random) 640)))
-        y (atom (int (* (Math/random) 480)))]
+  (reify Canvas
+    (setup [canvas]
+      (let [vertex (load-shader (slurp "resources/glsl/main.vert") :vertex)
+              fragment (load-shader (slurp "resources/glsl/main.frag")
+                                    :fragment)
+            program (glCreateProgram)
+            linked? (IntBuffer/allocate 1)
+            vertices (float-array [0.0 0.5 0.0
+                                   -0.5 -0.5 0.0
+                                   0.5 -0.5 0.0])]
+        (when-not (zero? program)
+          (glAttachShader program vertex)
+          (glAttachShader program fragment)
+          (glBindAttribLocation program 0 "vPosition")
+          (glLinkProgram program)
+          (glGetProgramiv program GL2ES2/GL_LINK_STATUS linked?)
+          (when (zero? (.get linked?))
+            (glClearColor 0.0 0.0 0.0 1.0)
+            {:program program
+             :vertices vertices}))))
+    (draw [canvas {:keys [program vertices]}]
+      (glClear GL/GL_COLOR_BUFFER_BIT)
+      (glUseProgram program)
+      ;; (glVertexAttribPointer (int 0) (int 3)
+      ;;                        GL/GL_FLOAT GL/GL_FALSE (int 0) vertices)
+      ;; (glEnableVertexAttribArray 0)
+      ;; (glDrawArrays GL/GL_TRIANGLES 0 3)
+      )))
+
+(defn gl-event-listener
+  [f]
+  (let [user-object (f)
+        user-data (atom nil)]
     (proxy [GLEventListener] []
-      (display [drawable]
+      (init [drawable]
         (binding [*gl* (.getGL2ES2 (.getGL drawable))]
-          (glClearColor 0.0 0.0 1.0 1.0)
-          (glClear GL/GL_COLOR_BUFFER_BIT)))
-      (init [arg0])
+          (reset! user-data (setup user-object))))
+      (display [drawable] 
+        (binding [*gl* (.getGL2ES2 (.getGL drawable))]
+          (draw user-object @user-data)))
       (dispose [arg0])
       (reshape [arg0 arg1 arg2 arg3 arg4]))))
 
@@ -80,11 +132,6 @@
    :context (map->Context {})
    :window (c/using (map->Window options) [:context])))
 
-(defn load-shader
-  [src type]
-  (let [shader (glCreateShader type)]
-    (glShaderSource shader 1 (into-array String src) nil)))
-
 (defn -main
   [& args]
   (letfn [(setup-window [window]
@@ -94,6 +141,6 @@
               (.setTitle "JOGL")
               (.addWindowListener (proxy [WindowAdapter] []
                                     (windowDestroyNotify [e])))
-              (.addGLEventListener (gl-event-listener)))
+              (.addGLEventListener (gl-event-listener hello-triangle)))
             (.start (FPSAnimator. window 60)))]
     (c/start-system (gl-system {:setup-window setup-window}))))
